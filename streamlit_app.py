@@ -11,7 +11,7 @@ PROMINENTE_POLITICI = [
 ]
 
 # Laad Apify-token uit .secrets (vereist configuratie op Streamlit Cloud)
-API_URL = "https://api.apify.com/v2/actor-tasks/YOUR_TASK_ID/runs/last/dataset/items?token=YOUR_TOKEN"
+API_URL = "https://api.apify.com/v2/actor-tasks/KX0iSTdmpU75fCY9U/runs/last/dataset/items?token=apify_api_O3sxpo33MCStXdUL5yx0yT9UPlelv71evpgh"
 
 @st.cache_data(ttl=3600)
 def laad_data():
