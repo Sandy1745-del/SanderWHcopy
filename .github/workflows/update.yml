@@ -1,0 +1,32 @@
+name: Update Politieke Data
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install pandas yfinance requests
+
+      - name: Run update script
+        run: python update_data.py
+
+      - name: Commit changes
+        run: |
+          git config --global user.name "SanderBot"
+          git config --global user.email "sanderbot@example.com"
+          git add sample_data.csv UPDATE_LOG.md
+          git commit -m "Automatische update via HouseStockWatcher"
+          git push
