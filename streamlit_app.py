@@ -1,37 +1,82 @@
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
+import zipfile
+import xml.etree.ElementTree as ET
+from io import BytesIO
 from datetime import datetime
 import pytz
 import os
 
 st.set_page_config(page_title="Politiek Aandelen Dashboard", layout="wide")
 
-# ─── Fallback logica ─────────────────────────────────────────────────────────────
+# ─── ZIP DOWNLOAD EN PARSE ───────────────────────────────────────────────────────
 
-def try_fetch_live_data():
+def fetch_disclosure_zip():
+    zip_url = "https://disclosures-clerk.house.gov/public_disc/financial-pdfs/2025FD.zip"
     try:
-        url = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = pd.DataFrame(response.json())
-            return data, "✅ Live data succesvol geladen"
-        else:
-            return None, "⚠️ Live API niet bereikbaar – backup gebruikt"
-    except:
-        return None, "⚠️ Live API niet beschikbaar – backup gebruikt"
+        response = requests.get(zip_url, timeout=20)
+        response.raise_for_status()
+    except Exception as e:
+        return None, f"❌ Download fout: {e}"
 
-@st.cache_data
-def load_data():
-    data, status = try_fetch_live_data()
-    if data is None or data.empty:
-        if os.path.exists("sample_data.csv"):
-            data = pd.read_csv("sample_data.csv", parse_dates=["transaction_date"])
-        else:
-            st.error("Geen live data of sample_data.csv beschikbaar.")
-            st.stop()
-    return data, status
+    zip_file = zipfile.ZipFile(BytesIO(response.content))
+    xml_files = [f for f in zip_file.namelist() if f.endswith(".xml")]
+
+    records = []
+    for xml_name in xml_files:
+        with zip_file.open(xml_name) as f:
+            try:
+                tree = ET.parse(f)
+                root = tree.getroot()
+
+                filer_info = root.find(".//FilerInfo")
+                name_parts = []
+                if filer_info is not None:
+                    for tag in ["First", "Middle", "Last"]:
+                        value = filer_info.find(tag)
+                        if value is not None and value.text:
+                            name_parts.append(value.text.strip())
+                representative = " ".join(name_parts)
+
+                assets = root.findall(".//Asset")
+                for asset in assets:
+                    asset_name = asset.findtext("Name", default="").strip()
+                    trans_type = asset.findtext("TransactionType", default="").strip()
+                    trans_date = asset.findtext("TransactionDate", default="").strip()
+                    amount = asset.findtext("Amount", default="").strip()
+
+                    if not (asset_name and trans_type and trans_date):
+                        continue
+
+                    try:
+                        parsed_date = datetime.strptime(trans_date, "%m/%d/%Y")
+                        if parsed_date.year < 2025:
+                            continue
+                        trans_date = parsed_date.strftime("%Y-%m-%d")
+                    except:
+                        continue
+
+                    records.append({
+                        "representative": representative,
+                        "asset_description": asset_name.upper(),
+                        "transaction_date": trans_date,
+                        "type": trans_type.lower(),
+                        "amount": amount
+                    })
+            except:
+                continue
+
+    df = pd.DataFrame(records)
+    if not df.empty:
+        df.to_csv("sample_data.csv", index=False)
+        return df, "📥 Gegevens geladen uit officiële 2025 ZIP (House Disclosure)"
+    else:
+        return None, "⚠️ Geen bruikbare data gevonden in ZIP"
+
+# ─── KOERSFUNCTIE ────────────────────────────────────────────────────────────────
 
 @st.cache_data
 def get_current_prices(tickers):
@@ -50,15 +95,20 @@ def get_current_prices(tickers):
         pass
     return prices
 
-# ─── Data verwerken ──────────────────────────────────────────────────────────────
+# ─── DATA OPHALEN ────────────────────────────────────────────────────────────────
 
-df, status_message = load_data()
+df, status = fetch_disclosure_zip()
+if df is None:
+    try:
+        df = pd.read_csv("sample_data.csv", parse_dates=["transaction_date"])
+        status = "⚠️ ZIP-download mislukt – backup gebruikt"
+    except:
+        st.error("❌ Geen data beschikbaar.")
+        st.stop()
 
-# Filters en vertalingen
+# ─── DATAVERWERKING ──────────────────────────────────────────────────────────────
+
 df = df[df["transaction_date"].notna()]
-df = df[df["asset_description"].notna()]
-df = df[~df["asset_description"].str.contains(" ")]
-df = df[df["asset_description"].str.len() <= 5]
 df["transaction_date"] = pd.to_datetime(df["transaction_date"], errors="coerce")
 df = df[df["transaction_date"] >= datetime(2025, 1, 1)]
 
@@ -72,7 +122,7 @@ df["Transactie"] = df["type"].map({
 }).fillna("Onbekend")
 df["Waarde ($)"] = df["amount"]
 
-# ─── Koersen en rendement berekenen ──────────────────────────────────────────────
+# ─── KOERS + RENDEMENT ──────────────────────────────────────────────────────────
 
 tickers = df["Aandeel"].unique().tolist()
 koersen = get_current_prices(tickers)
@@ -99,20 +149,15 @@ for i, row in df.iterrows():
 
 df = df.sort_values("transaction_date", ascending=False)
 
-# ─── UI ──────────────────────────────────────────────────────────────────────────
+# ─── STREAMLIT UI ────────────────────────────────────────────────────────────────
 
 st.title("🇺🇸 Politiek Aandelen Dashboard")
-st.markdown(status_message)
-
-if df.empty or "Politicus" not in df.columns:
-    st.warning("⚠️ Geen geldige data.")
-    st.stop()
+st.markdown(status)
 
 politici = df["Politicus"].unique()
-selectie = st.multiselect("Kies politicus:", sorted(politici), default=politici[:4])
+selectie = st.multiselect("Kies politicus:", sorted(politici), default=politici[:5])
 filtered = df[df["Politicus"].isin(selectie)].copy()
 
-# Tijden
 amsterdam_time = datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
 
 st.markdown(f"📉 **Actuele koersen** _(USD, laatst bijgewerkt: {amsterdam_time} Amsterdamse tijd)_")
