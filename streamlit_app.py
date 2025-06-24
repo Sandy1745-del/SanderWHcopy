@@ -1,27 +1,37 @@
 import streamlit as st
 import pandas as pd
-import requests
 import yfinance as yf
+import requests
 from datetime import datetime
 import pytz
+import os
 
 st.set_page_config(page_title="Politiek Aandelen Dashboard", layout="wide")
 
-# ─── DATAFUNCTIES ───────────────────────────────────────────────────────────────
+# ─── Fallback logica ─────────────────────────────────────────────────────────────
 
-@st.cache_data
-def fetch_trades():
+def try_fetch_live_data():
     try:
         url = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
         response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            st.warning("⚠️ Fout bij ophalen van data. Probeer het later opnieuw.")
-            return pd.DataFrame()
-        data = response.json()
-        return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"Fout bij verbinding met API: {e}")
-        return pd.DataFrame()
+        if response.status_code == 200:
+            data = pd.DataFrame(response.json())
+            return data, "✅ Live data succesvol geladen"
+        else:
+            return None, "⚠️ Live API niet bereikbaar – backup gebruikt"
+    except:
+        return None, "⚠️ Live API niet beschikbaar – backup gebruikt"
+
+@st.cache_data
+def load_data():
+    data, status = try_fetch_live_data()
+    if data is None or data.empty:
+        if os.path.exists("sample_data.csv"):
+            data = pd.read_csv("sample_data.csv", parse_dates=["transaction_date"])
+        else:
+            st.error("Geen live data of sample_data.csv beschikbaar.")
+            st.stop()
+    return data, status
 
 @st.cache_data
 def get_current_prices(tickers):
@@ -40,25 +50,18 @@ def get_current_prices(tickers):
         pass
     return prices
 
-# ─── FILTER + VOORBEREIDING ─────────────────────────────────────────────────────
+# ─── Data verwerken ──────────────────────────────────────────────────────────────
 
-df = fetch_trades()
+df, status_message = load_data()
 
-if df.empty or "representative" not in df.columns:
-    st.warning("⚠️ Geen geldige data gevonden. Mogelijk is de bron tijdelijk onbereikbaar.")
-    st.stop()
-
-# Basisfilters
+# Filters en vertalingen
 df = df[df["transaction_date"].notna()]
 df = df[df["asset_description"].notna()]
 df = df[~df["asset_description"].str.contains(" ")]
 df = df[df["asset_description"].str.len() <= 5]
-
-# Tijdfilter vanaf 1 januari 2025
 df["transaction_date"] = pd.to_datetime(df["transaction_date"], errors="coerce")
 df = df[df["transaction_date"] >= datetime(2025, 1, 1)]
 
-# Kolommen maken
 df["Datum"] = df["transaction_date"].dt.strftime("%d-%m-%Y")
 df["Aandeel"] = df["asset_description"].str.upper()
 df["Politicus"] = df["representative"]
@@ -69,7 +72,7 @@ df["Transactie"] = df["type"].map({
 }).fillna("Onbekend")
 df["Waarde ($)"] = df["amount"]
 
-# ─── KOERS + RENDEMENT ──────────────────────────────────────────────────────────
+# ─── Koersen en rendement berekenen ──────────────────────────────────────────────
 
 tickers = df["Aandeel"].unique().tolist()
 koersen = get_current_prices(tickers)
@@ -94,35 +97,30 @@ for i, row in df.iterrows():
     except:
         continue
 
-# Sorteren op meest recent
 df = df.sort_values("transaction_date", ascending=False)
 
-# ─── STREAMLIT UI ────────────────────────────────────────────────────────────────
+# ─── UI ──────────────────────────────────────────────────────────────────────────
 
 st.title("🇺🇸 Politiek Aandelen Dashboard")
-st.markdown("Geselecteerde transacties van prominente Amerikaanse politici.")
+st.markdown(status_message)
 
 if df.empty or "Politicus" not in df.columns:
-    st.warning("⚠️ Geen data beschikbaar.")
+    st.warning("⚠️ Geen geldige data.")
     st.stop()
 
 politici = df["Politicus"].unique()
 selectie = st.multiselect("Kies politicus:", sorted(politici), default=politici[:4])
-
 filtered = df[df["Politicus"].isin(selectie)].copy()
 
-# ─── KOERSOVERZICHT ──────────────────────────────────────────────────────────────
+# Tijden
+amsterdam_time = datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
 
-if not filtered.empty:
-    amsterdam_time = datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
-    st.markdown(f"📉 **Actuele koersen** _(in USD, laatst bijgewerkt: {amsterdam_time} Amsterdamse tijd)_")
+st.markdown(f"📉 **Actuele koersen** _(USD, laatst bijgewerkt: {amsterdam_time} Amsterdamse tijd)_")
 
-    for ticker in sorted(set(filtered["Aandeel"])):
-        prijs = koersen.get(ticker)
-        if prijs:
-            st.markdown(f"- **{ticker}**: **${prijs}**")
-
-# ─── TABEL MET KLEURCODE ────────────────────────────────────────────────────────
+for ticker in sorted(set(filtered["Aandeel"])):
+    prijs = koersen.get(ticker)
+    if prijs:
+        st.markdown(f"- **{ticker}**: **${prijs}**")
 
 def kleur_rendement(val):
     try:
@@ -134,17 +132,14 @@ def kleur_rendement(val):
         return ""
     return ""
 
-st.markdown("📊 **Geselecteerde transacties**")
-
 kolommen = [
     "Politicus", "Aandeel", "Datum", "Transactie", "Waarde ($)",
     "Aankoopprijs ($)", "Actuele prijs ($)", "Rendement (%)"
 ]
 
+st.markdown("📊 **Geselecteerde transacties**")
 styled_df = filtered[kolommen].style.applymap(kleur_rendement, subset=["Rendement (%)"])
 st.dataframe(styled_df, use_container_width=True)
-
-# ─── DOWNLOAD ────────────────────────────────────────────────────────────────────
 
 csv = filtered[kolommen].to_csv(index=False).encode("utf-8")
 st.download_button("📩 Download als Excel", csv, "transacties.csv", "text/csv")
