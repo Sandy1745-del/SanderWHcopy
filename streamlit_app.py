@@ -56,7 +56,7 @@ st.markdown(f"📈 Actuele koersen (USD) – _laatst bijgewerkt: {now_ams}_")
 for ticker in tickers:
     prijs = live_prices.get(ticker)
     if prijs:
-        st.markdown(f"- **{ticker}**: ${prijs}")
+        st.markdown(f"- **[{ticker}](https://finance.yahoo.com/quote/{ticker})**: ${prijs}")
     else:
         st.markdown(f"- **{ticker}**: niet beschikbaar")
 
