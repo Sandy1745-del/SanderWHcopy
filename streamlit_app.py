@@ -40,7 +40,7 @@ def get_current_prices(tickers):
         pass
     return prices
 
-# ─── VOORBEREIDING ───────────────────────────────────────────────────────────────
+# ─── FILTER + VOORBEREIDING ─────────────────────────────────────────────────────
 
 df = fetch_trades()
 
@@ -48,15 +48,25 @@ if df.empty or "representative" not in df.columns:
     st.warning("⚠️ Geen geldige data gevonden. Mogelijk is de bron tijdelijk onbereikbaar.")
     st.stop()
 
+# Basisfilters
 df = df[df["transaction_date"].notna()]
 df = df[df["asset_description"].notna()]
 df = df[~df["asset_description"].str.contains(" ")]
 df = df[df["asset_description"].str.len() <= 5]
 
-df["Datum"] = pd.to_datetime(df["transaction_date"]).dt.strftime("%d-%m-%Y")
+# Tijdfilter vanaf 1 januari 2025
+df["transaction_date"] = pd.to_datetime(df["transaction_date"], errors="coerce")
+df = df[df["transaction_date"] >= datetime(2025, 1, 1)]
+
+# Kolommen maken
+df["Datum"] = df["transaction_date"].dt.strftime("%d-%m-%Y")
 df["Aandeel"] = df["asset_description"].str.upper()
 df["Politicus"] = df["representative"]
-df["Transactie"] = df["type"]
+df["Transactie"] = df["type"].map({
+    "purchase": "Koop",
+    "sale_full": "Verkoop",
+    "sale_partial": "Verkoop"
+}).fillna("Onbekend")
 df["Waarde ($)"] = df["amount"]
 
 # ─── KOERS + RENDEMENT ──────────────────────────────────────────────────────────
@@ -64,25 +74,28 @@ df["Waarde ($)"] = df["amount"]
 tickers = df["Aandeel"].unique().tolist()
 koersen = get_current_prices(tickers)
 
-df["Aankoopprijs"] = "-"
-df["Actuele prijs"] = "-"
+df["Aankoopprijs ($)"] = "-"
+df["Actuele prijs ($)"] = "-"
 df["Rendement (%)"] = "-"
 
 for i, row in df.iterrows():
     ticker = row["Aandeel"]
     try:
         hist = yf.download(ticker, period="6mo", progress=False)
-        tx_date = pd.to_datetime(row["transaction_date"])
+        tx_date = row["transaction_date"]
         tx_date = hist.index[hist.index.get_indexer([tx_date], method='nearest')[0]]
         aankoop = hist.loc[tx_date]["Close"]
         actueel = koersen.get(ticker, None)
         if actueel:
             rendement = ((actueel - aankoop) / aankoop) * 100
-            df.at[i, "Aankoopprijs"] = round(aankoop, 2)
-            df.at[i, "Actuele prijs"] = round(actueel, 2)
+            df.at[i, "Aankoopprijs ($)"] = f"${round(aankoop, 2)}"
+            df.at[i, "Actuele prijs ($)"] = f"${round(actueel, 2)}"
             df.at[i, "Rendement (%)"] = round(rendement, 2)
     except:
         continue
+
+# Sorteren op meest recent
+df = df.sort_values("transaction_date", ascending=False)
 
 # ─── STREAMLIT UI ────────────────────────────────────────────────────────────────
 
@@ -98,17 +111,16 @@ selectie = st.multiselect("Kies politicus:", sorted(politici), default=politici[
 
 filtered = df[df["Politicus"].isin(selectie)].copy()
 
-# ─── KOERS OVERZICHT ─────────────────────────────────────────────────────────────
+# ─── KOERSOVERZICHT ──────────────────────────────────────────────────────────────
 
 if not filtered.empty:
-    st.markdown("📉 **Actuele koersen** _(in EUR, laatst bijgewerkt: {} Amsterdamse tijd)_".format(
-        datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
-    ))
+    amsterdam_time = datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
+    st.markdown(f"📉 **Actuele koersen** _(in USD, laatst bijgewerkt: {amsterdam_time} Amsterdamse tijd)_")
 
     for ticker in sorted(set(filtered["Aandeel"])):
         prijs = koersen.get(ticker)
         if prijs:
-            st.markdown(f"- **{ticker}**: ${prijs}")
+            st.markdown(f"- **{ticker}**: **${prijs}**")
 
 # ─── TABEL MET KLEURCODE ────────────────────────────────────────────────────────
 
@@ -126,7 +138,7 @@ st.markdown("📊 **Geselecteerde transacties**")
 
 kolommen = [
     "Politicus", "Aandeel", "Datum", "Transactie", "Waarde ($)",
-    "Aankoopprijs", "Actuele prijs", "Rendement (%)"
+    "Aankoopprijs ($)", "Actuele prijs ($)", "Rendement (%)"
 ]
 
 styled_df = filtered[kolommen].style.applymap(kleur_rendement, subset=["Rendement (%)"])
