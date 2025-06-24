@@ -1,51 +1,115 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+import requests
+from datetime import datetime, timedelta
 
-# Laad dataset vanaf GitHub
-csv_url = "https://raw.githubusercontent.com/Sandy1745-del/SanderWHcopy/main/sample_data.csv"
+@st.cache_data
+def fetch_trades():
+    url = "https://housestockwatcher.com/api/financial-disclosures"
+    try:
+        response = requests.get(url)
+        return response.json()
+    except:
+        return []
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv(csv_url)
-    # Wijzig datum naar dd-mm-yyyy
-    df["Datum"] = pd.to_datetime(df["Datum"]).dt.strftime("%d-%m-%Y")
-    return df
+    trades = fetch_trades()
+    records = []
+    tickers = set()
 
-@st.cache_data
-def get_latest_prices(tickers):
-    data = {}
-    for ticker in tickers:
+    for item in trades:
+        ticker = item.get("assetDescription", "").strip().upper()
+        if len(ticker) > 6 or " " in ticker:
+            continue
         try:
-            info = yf.Ticker(ticker).info
-            price = info.get("regularMarketPrice", None)
-            if price:
-                data[ticker] = price
+            date = datetime.strptime(item["transactionDate"], "%Y-%m-%d")
         except:
             continue
-    return data, datetime.utcnow().strftime("%d-%m-%Y %H:%M UTC")
+        record = {
+            "Politicus": item.get("representative", "Onbekend"),
+            "Aandeel": ticker,
+            "Datum": date.strftime("%d-%m-%Y"),
+            "RawDatum": date,
+            "Transactie": item.get("type", "Onbekend"),
+            "Waarde ($)": item.get("amount", "Onbekend")
+        }
+        records.append(record)
+        tickers.add(ticker)
 
-df = load_data()
+    df = pd.DataFrame(records)
+    return df, list(tickers)
 
-st.title("🇺🇸 Politiek Aandelen Dashboard")
+def enrich_prices(df, tickers):
+    current_prices = {}
+    for ticker in tickers:
+        try:
+            hist = yf.download(ticker, period="90d", interval="1d", progress=False)
+            current_price = yf.Ticker(ticker).info["regularMarketPrice"]
+            current_prices[ticker] = current_price
+        except:
+            continue
+
+        for i, row in df[df["Aandeel"] == ticker].iterrows():
+            try:
+                tx_date = row["RawDatum"]
+                if tx_date not in hist.index:
+                    tx_date = hist.index[hist.index.get_loc(tx_date, method='nearest')]
+                price = hist.loc[tx_date]["Close"]
+                df.at[i, "Aankoopprijs ($)"] = round(price, 2)
+                df.at[i, "Huidige prijs ($)"] = round(current_prices.get(ticker, 0), 2)
+
+                if price and current_prices.get(ticker):
+                    rendement = ((current_prices[ticker] - price) / price) * 100
+                    df.at[i, "Rendement (%)"] = round(rendement, 2)
+            except:
+                continue
+
+    return df, current_prices
+
+# ---------- STREAMLIT FRONTEND ----------
+st.set_page_config(page_title="Politiek Aandelen Dashboard")
+st.markdown("# 🇺🇸 Politiek Aandelen Dashboard")
 st.markdown("Geselecteerde transacties van prominente Amerikaanse politici.")
 
-politici = df["Politicus"].unique().tolist()
-selectie = st.multiselect("Kies politicus:", opties := politici, default=politici)
+df, tickers = load_data()
+df, live_prices = enrich_prices(df, tickers)
+df.fillna("-", inplace=True)
 
+politici = df["Politicus"].unique()
+selectie = st.multiselect("Kies politicus:", options=politici, default=politici[:4])
 filtered = df[df["Politicus"].isin(selectie)]
 
-# Toon huidige koers
-tickers = filtered["Aandeel"].unique().tolist()
-koersen, timestamp = get_latest_prices(tickers)
+# ✅ Laatste transactie tonen
+if not df.empty:
+    laatste = df.sort_values(by="RawDatum", ascending=False).iloc[0]
+    st.markdown(f"📌 **Laatste transactie:** {laatste['Datum']} door {laatste['Politicus']} ({laatste['Aandeel']})")
 
-st.markdown(f"📈 **Actuele koersen** *(laatst bijgewerkt: {timestamp})*")
-for t in tickers:
-    prijs = koersen.get(t, "Niet beschikbaar")
-    st.markdown(f"- **{t}**: ${prijs}")
+# ✅ Actuele koersen
+timestamp = datetime.utcnow().strftime("%d-%m-%Y %H:%M UTC")
+st.markdown(f"📉 **Actuele koersen** _(laatst bijgewerkt: {timestamp})_")
+for t in selectie:
+    tickers = df[df["Politicus"] == t]["Aandeel"].unique()
+    for share in tickers:
+        prijs = live_prices.get(share)
+        if prijs:
+            st.markdown(f"- **{share}**: ${prijs}")
+        else:
+            st.markdown(f"- **{share}**: *(niet beschikbaar)*")
 
-st.markdown("### 📊 Geselecteerde transacties")
-st.dataframe(filtered)
+# 📊 Tabel
+st.markdown("📊 **Geselecteerde transacties**")
+kolommen = [
+    "Politicus", "Aandeel", "Datum", "Transactie", "Waarde ($)",
+    "Aankoopprijs ($)", "Huidige prijs ($)", "Rendement (%)"
+]
+st.dataframe(filtered[kolommen], use_container_width=True)
 
-st.download_button("📥 Download als Excel", filtered.to_csv(index=False), file_name="politiek_aandelen.csv")
+# 📥 Download
+st.download_button(
+    "📩 Download als Excel",
+    data=filtered[kolommen].to_csv(index=False).encode(),
+    file_name="transacties.csv",
+    mime="text/csv"
+)
