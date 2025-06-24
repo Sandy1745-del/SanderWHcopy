@@ -1,119 +1,94 @@
-import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+import streamlit as st
+from datetime import datetime, timedelta
 import pytz
 
-# Zet pagina-configuratie
-st.set_page_config(page_title="Capitol Trades Dashboard", layout="wide")
-
-st.markdown("## 🏛️ Capitol Trades Dashboard")
-st.markdown("Bekijk recente aandelenaankopen en -verkopen van Amerikaanse politici.")
-
-# Laad data
-@st.cache_data
-def load_data():
+def get_closest_price(ticker, date):
     try:
-        df = pd.read_csv("sample_data.csv")
-        df["Datum"] = pd.to_datetime(df["Datum"]).dt.strftime("%d-%m-%Y")
-        df["Transactie"] = df["Transactie"].replace({
-            "purchase": "Aankoop",
-            "sell_partial": "Verkoop",
-            "sell_full": "Verkoop"
-        })
-        return df
+        hist = yf.download(ticker, start=date - timedelta(days=5), end=date + timedelta(days=5), interval="1d", progress=False)
+        if not hist.empty:
+            closest_idx = hist.index.get_loc(date, method='nearest')
+            return hist.iloc[closest_idx]['Close']
     except:
-        return pd.DataFrame()
+        return None
 
-df = load_data()
+def process_dataframe(file_path):
+    df = pd.read_csv(file_path)
+    df["Datum"] = pd.to_datetime(df["Datum"])
+    df = df[df["Datum"] >= datetime(2025, 1, 1)]
+    df = df.sort_values(by="Datum", ascending=False)
+    df["Datum"] = df["Datum"].dt.strftime("%d-%m-%Y")
 
-if df.empty:
-    st.warning("⚠️ Geen data beschikbaar.")
-    st.stop()
-else:
-    st.success("✅ Dataframe succesvol geladen!")
-
-# Haal tickers en huidige prijzen op
-@st.cache_data(ttl=3600)
-def get_live_prices(tickers):
-    prices = {}
-    for ticker in tickers:
+    koersen = {}
+    for ticker in df["Aandeel"].unique():
         try:
             data = yf.Ticker(ticker).history(period="1d")
-            prices[ticker] = round(data["Close"].iloc[-1], 2)
+            if not data.empty:
+                koersen[ticker] = data["Close"].iloc[-1]
         except:
-            prices[ticker] = None
-    return prices
+            koersen[ticker] = None
 
-tickers = df["Aandeel"].unique().tolist()
-live_prices = get_live_prices(tickers)
-
-# Toon timestamp van update
-amsterdam = pytz.timezone("Europe/Amsterdam")
-now_ams = datetime.now(amsterdam).strftime("%d-%m-%Y %H:%M")
-st.markdown(f"📈 Actuele koersen (USD) – _laatst bijgewerkt: {now_ams}_")
-
-for ticker in tickers:
-    prijs = live_prices.get(ticker)
-    if prijs:
-        st.markdown(f"- **[{ticker}](https://finance.yahoo.com/quote/{ticker})**: ${prijs}")
-    else:
-        st.markdown(f"- **{ticker}**: niet beschikbaar")
-
-# Voeg aankoopprijs + rendement toe
-def calculate_returns(df, live_prices):
     df["Aankoopprijs"] = None
     df["Huidige prijs ($)"] = None
     df["Rendement (%)"] = None
 
     for i, row in df.iterrows():
         try:
-            ticker = row["Aandeel"]
-            date = datetime.strptime(row["Datum"], "%d-%m-%Y")
-            price_data = yf.Ticker(ticker).history(start=date, end=date + pd.Timedelta(days=2))
-            price_on_date = price_data["Close"].iloc[0]
-            current_price = live_prices.get(ticker, None)
+            aankoop_datum = datetime.strptime(row["Datum"], "%d-%m-%Y")
+            aandeel = row["Aandeel"]
+            aankoopprijs = get_closest_price(aandeel, aankoop_datum)
+            df.at[i, "Aankoopprijs"] = aankoopprijs
 
-            if isinstance(current_price, (int, float)) and price_on_date:
-                rendement = ((current_price - price_on_date) / price_on_date) * 100
-                df.at[i, "Aankoopprijs"] = round(price_on_date, 2)
-                df.at[i, "Huidige prijs ($)"] = current_price
+            huidige_koers = koersen.get(aandeel)
+            df.at[i, "Huidige prijs ($)"] = huidige_koers
+
+            if aankoopprijs and huidige_koers:
+                rendement = ((huidige_koers - aankoopprijs) / aankoopprijs) * 100
                 df.at[i, "Rendement (%)"] = round(rendement, 2)
         except:
             continue
-    return df
 
-df = calculate_returns(df, live_prices)
+    df["Transactie"] = df["Transactie"].replace({
+        "purchase": "Aankoop",
+        "sell_full": "Verkoop"
+    })
 
-# Filter op datum > 01-01-2025
-df["Datum_dt"] = pd.to_datetime(df["Datum"], format="%d-%m-%Y")
-df = df[df["Datum_dt"] >= pd.Timestamp("2025-01-01")]
-df = df.sort_values(by="Datum_dt", ascending=False)
+    return df, koersen
 
-# Politici filter
-politici = df["Politicus"].unique().tolist()
-selected_politici = st.multiselect("Kies politicus:", options=politici, default=politici)
+# Streamlit UI
+st.set_page_config("Capitol Trades Dashboard", page_icon="🏛️", layout="wide")
+st.title("🏛️ Capitol Trades Dashboard")
+st.write("Bekijk recente aandelenaankopen en -verkopen van Amerikaanse politici.")
 
-filtered_df = df[df["Politicus"].isin(selected_politici)]
+try:
+    df, koersen = process_dataframe("sample_data.csv")
+    st.success("✅ Dataframe succesvol geladen!")
 
-# Toon tabel
-st.markdown("### 📉 Geselecteerde transacties")
+    ams_now = datetime.now(pytz.timezone("Europe/Amsterdam"))
+    tijd = ams_now.strftime("%d-%m-%Y %H:%M")
 
-if filtered_df.empty:
-    st.warning("⚠️ Geen resultaten voor deze selectie.")
-else:
-    show_df = filtered_df[[
-        "Politicus", "Aandeel", "Datum", "Transactie", "Waarde ($)",
-        "Aankoopprijs", "Huidige prijs ($)", "Rendement (%)"
-    ]]
+    st.markdown(f"### 🧾 Actuele koersen (USD) – _laatst bijgewerkt: {tijd}_")
+    for ticker, prijs in koersen.items():
+        if prijs:
+            st.markdown(f"- [{ticker}](https://finance.yahoo.com/quote/{ticker}) : **${round(prijs, 2)}**", unsafe_allow_html=True)
 
-    def kleur_rendement(val):
-        if isinstance(val, (int, float)):
-            color = "green" if val > 0 else "red"
-            return f"color: {color}"
-        return ""
+    politici = df["Politicus"].unique().tolist()
+    selectie = st.multiselect("Kies politicus:", politici, default=politici)
 
-    st.dataframe(show_df.style.applymap(kleur_rendement, subset=["Rendement (%)"]), use_container_width=True)
+    gefilterd = df[df["Politicus"].isin(selectie)]
 
-    # Download knop
-    st.download_button("📥 Download als CSV", data=show_df.to_csv(index=False).encode("utf-8"), file_name="gefilterde_transacties.csv")
+    if not gefilterd.empty:
+        st.markdown("### 📉 Geselecteerde transacties")
+        def kleur(x):
+            if isinstance(x, float):
+                return f"color: {'green' if x > 0 else 'red'}"
+            return ""
+        st.dataframe(gefilterd.style.applymap(kleur, subset=["Rendement (%)"]), use_container_width=True)
+
+        csv = gefilterd.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download als CSV", csv, "transacties.csv", "text/csv")
+    else:
+        st.warning("⚠️ Geen data beschikbaar.")
+except Exception as e:
+    st.error(f"❌ Fout bij laden van data: {e}")
