@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
+import pytz
+from streamlit import column_config
 
+# 👉 Data ophalen
 @st.cache_data
 def fetch_trades():
     url = "https://housestockwatcher.com/api/financial-disclosures"
@@ -41,6 +44,7 @@ def load_data():
     df = pd.DataFrame(records)
     return df, list(tickers)
 
+# 👉 Koersverrijking
 def enrich_prices(df, tickers):
     current_prices = {}
     for ticker in tickers:
@@ -68,7 +72,13 @@ def enrich_prices(df, tickers):
 
     return df, current_prices
 
-# ---------- STREAMLIT FRONTEND ----------
+# 👉 Tijd in Amsterdam
+def get_amsterdam_time():
+    utc_now = datetime.utcnow()
+    amsterdam_now = utc_now.replace(tzinfo=pytz.utc).astimezone(pytz.timezone("Europe/Amsterdam"))
+    return amsterdam_now.strftime("%d-%m-%Y %H:%M %Z")
+
+# ---------- STREAMLIT UI ----------
 st.set_page_config(page_title="Politiek Aandelen Dashboard")
 st.markdown("# 🇺🇸 Politiek Aandelen Dashboard")
 st.markdown("Geselecteerde transacties van prominente Amerikaanse politici.")
@@ -86,8 +96,8 @@ if not df.empty:
     laatste = df.sort_values(by="RawDatum", ascending=False).iloc[0]
     st.markdown(f"📌 **Laatste transactie:** {laatste['Datum']} door {laatste['Politicus']} ({laatste['Aandeel']})")
 
-# ✅ Actuele koersen
-timestamp = datetime.utcnow().strftime("%d-%m-%Y %H:%M UTC")
+# ✅ Koersen met lokale tijd
+timestamp = get_amsterdam_time()
 st.markdown(f"📉 **Actuele koersen** _(laatst bijgewerkt: {timestamp})_")
 for t in selectie:
     tickers = df[df["Politicus"] == t]["Aandeel"].unique()
@@ -98,13 +108,28 @@ for t in selectie:
         else:
             st.markdown(f"- **{share}**: *(niet beschikbaar)*")
 
-# 📊 Tabel
+# 📊 Tabel met kleur op rendement
 st.markdown("📊 **Geselecteerde transacties**")
 kolommen = [
     "Politicus", "Aandeel", "Datum", "Transactie", "Waarde ($)",
     "Aankoopprijs ($)", "Huidige prijs ($)", "Rendement (%)"
 ]
-st.dataframe(filtered[kolommen], use_container_width=True)
+
+st.dataframe(
+    filtered[kolommen],
+    use_container_width=True,
+    column_config={
+        "Rendement (%)": column_config.NumberColumn(
+            "Rendement (%)",
+            help="Verschil tussen aankoop- en huidige prijs",
+            format="%.2f",
+            min_value=-100.0,
+            max_value=500.0,
+            step=0.1
+        )
+    },
+    hide_index=True
+)
 
 # 📥 Download
 st.download_button(
