@@ -1,56 +1,51 @@
-import streamlit as st
+from datetime import datetime
+import pytz
 import pandas as pd
+import streamlit as st
+import yfinance as yf
 
-st.set_page_config(page_title="Capitol Trades Dashboard", page_icon="🏛️")
+st.set_page_config(page_title="Capitol Trades Dashboard", layout="wide")
 
-st.title("🏛️ Capitol Trades Dashboard")
+st.markdown("## 🏛️ Capitol Trades Dashboard")
 st.markdown("Bekijk recente aandelenaankopen en -verkopen van Amerikaanse politici.")
 
 @st.cache_data
 def load_data():
     try:
         df = pd.read_csv("sample_data.csv")
-        st.write("✅ Dataframe succesvol geladen!")
-        st.write(df.head())  # Laat eerste rijen zien
-        st.write("🔍 Kolommen:", df.columns.tolist())
-
-        # Zorg dat datum kolom goed is
-        df["Datum"] = pd.to_datetime(df["Datum"], errors='coerce')
-
-        # Debug: toon unieke datums
-        st.write("📅 Unieke datums in dataset:", df["Datum"].dt.date.unique())
-
-        # Filter op recente transacties vanaf 2025
-        df = df[df["Datum"] >= pd.to_datetime("2025-01-01")]
-
-        # Debug: controle na filtering
-        st.write("📊 Data na filtering:")
-        st.write(df.head())
-
+        df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
+        df = df[df["Datum"] >= pd.Timestamp("2025-01-01")]
+        df = df.sort_values(by="Datum", ascending=False)
+        df["Datum"] = df["Datum"].dt.strftime("%d-%m-%Y")
         return df
     except Exception as e:
-        st.error(f"❌ Fout bij inladen data: {e}")
+        st.error(f"Fout bij het laden van data: {e}")
         return pd.DataFrame()
 
 df = load_data()
 
 if df.empty:
-    st.warning("⚠️ Geen data beschikbaar na filtering of inleesfout.")
+    st.warning("⚠️ Geen data beschikbaar.")
     st.stop()
 
-# Politici lijst voor dropdown
-politici = df["Politicus"].unique()
-selectie = st.multiselect("Kies politicus:", politici, default=politici.tolist())
+tickers = df["Aandeel"].unique()
 
-# Filter op geselecteerde politici
-filtered_df = df[df["Politicus"].isin(selectie)]
+@st.cache_data(ttl=3600)
+def fetch_live_prices(tickers):
+    prices = {}
+    now = datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
+    for ticker in tickers:
+        try:
+            stock = yf.Ticker(ticker)
+            price = stock.history(period="1d")["Close"].iloc[-1]
+            prices[ticker] = round(price, 2)
+        except:
+            prices[ticker] = "Onbekend"
+    return prices, now
 
-if filtered_df.empty:
-    st.warning("⚠️ Geen resultaten voor geselecteerde politici.")
-else:
-    st.subheader("📈 Geselecteerde transacties")
-    st.dataframe(filtered_df)
+live_prices, timestamp = fetch_live_prices(tickers)
 
-    # Downloadknop
-    csv = filtered_df.to_csv(index=False).encode("utf-8")
-    st.download_button("💾 Download als CSV", data=csv, file_name="geselecteerde_transacties.csv", mime="text/csv")
+def calculate_returns(df, live_prices):
+    df["Aankoopprijs"] = None
+    df["Huidige prijs ($)"] = None
+    df["Rendement (%)"] =
