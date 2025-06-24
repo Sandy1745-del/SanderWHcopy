@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -12,18 +11,19 @@ import os
 
 st.set_page_config(page_title="Politiek Aandelen Dashboard", layout="wide")
 
-# ─── ZIP DOWNLOAD EN PARSE ───────────────────────────────────────────────────────
-
-def fetch_disclosure_zip():
-    zip_url = "https://disclosures-clerk.house.gov/public_disc/financial-pdfs/2025FD.zip"
+def fetch_disclosure_zip(year=2025):
+    zip_url = f"https://disclosures-clerk.house.gov/public_disc/financial-pdfs/{year}FD.zip"
     try:
         response = requests.get(zip_url, timeout=20)
         response.raise_for_status()
     except Exception as e:
-        return None, f"❌ Download fout: {e}"
+        return None, f"❌ Download fout voor {year}FD.zip: {e}"
 
-    zip_file = zipfile.ZipFile(BytesIO(response.content))
-    xml_files = [f for f in zip_file.namelist() if f.endswith(".xml")]
+    try:
+        zip_file = zipfile.ZipFile(BytesIO(response.content))
+        xml_files = [f for f in zip_file.namelist() if f.endswith(".xml")]
+    except:
+        return None, "❌ ZIP-bestand kan niet worden uitgepakt of bevat geen XML-bestanden."
 
     records = []
     for xml_name in xml_files:
@@ -53,7 +53,7 @@ def fetch_disclosure_zip():
 
                     try:
                         parsed_date = datetime.strptime(trans_date, "%m/%d/%Y")
-                        if parsed_date.year < 2025:
+                        if parsed_date.year < year:
                             continue
                         trans_date = parsed_date.strftime("%Y-%m-%d")
                     except:
@@ -72,11 +72,9 @@ def fetch_disclosure_zip():
     df = pd.DataFrame(records)
     if not df.empty:
         df.to_csv("sample_data.csv", index=False)
-        return df, "📥 Gegevens geladen uit officiële 2025 ZIP (House Disclosure)"
+        return df, f"📥 Gegevens geladen uit officiële {year} ZIP (House Disclosure)"
     else:
         return None, "⚠️ Geen bruikbare data gevonden in ZIP"
-
-# ─── KOERSFUNCTIE ────────────────────────────────────────────────────────────────
 
 @st.cache_data
 def get_current_prices(tickers):
@@ -95,18 +93,14 @@ def get_current_prices(tickers):
         pass
     return prices
 
-# ─── DATA OPHALEN ────────────────────────────────────────────────────────────────
-
 df, status = fetch_disclosure_zip()
-if df is None:
+if df is None or df.empty:
     try:
         df = pd.read_csv("sample_data.csv", parse_dates=["transaction_date"])
-        status = "⚠️ ZIP-download mislukt – backup gebruikt"
+        status = "⚠️ ZIP-download mislukt – sample gebruikt"
     except:
         st.error("❌ Geen data beschikbaar.")
         st.stop()
-
-# ─── DATAVERWERKING ──────────────────────────────────────────────────────────────
 
 df = df[df["transaction_date"].notna()]
 df["transaction_date"] = pd.to_datetime(df["transaction_date"], errors="coerce")
@@ -121,8 +115,6 @@ df["Transactie"] = df["type"].map({
     "sale_partial": "Verkoop"
 }).fillna("Onbekend")
 df["Waarde ($)"] = df["amount"]
-
-# ─── KOERS + RENDEMENT ──────────────────────────────────────────────────────────
 
 tickers = df["Aandeel"].unique().tolist()
 koersen = get_current_prices(tickers)
@@ -149,8 +141,6 @@ for i, row in df.iterrows():
 
 df = df.sort_values("transaction_date", ascending=False)
 
-# ─── STREAMLIT UI ────────────────────────────────────────────────────────────────
-
 st.title("🇺🇸 Politiek Aandelen Dashboard")
 st.markdown(status)
 
@@ -159,7 +149,6 @@ selectie = st.multiselect("Kies politicus:", sorted(politici), default=politici[
 filtered = df[df["Politicus"].isin(selectie)].copy()
 
 amsterdam_time = datetime.now(pytz.timezone("Europe/Amsterdam")).strftime("%d-%m-%Y %H:%M")
-
 st.markdown(f"📉 **Actuele koersen** _(USD, laatst bijgewerkt: {amsterdam_time} Amsterdamse tijd)_")
 
 for ticker in sorted(set(filtered["Aandeel"])):
