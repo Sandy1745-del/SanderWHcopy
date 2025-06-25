@@ -5,83 +5,75 @@ import pandas as pd
 import time
 import os
 
-st.set_page_config(page_title="Capitol Trades Dashboard", page_icon="🏛️")
+st.set_page_config(page_title="Capitol Trades Debug", page_icon="🔍")
 
-st.title("🏛️ Capitol Trades Dashboard")
-st.markdown("Recente aandelentransacties van prominente Amerikaanse politici")
+st.title("🏛️ Capitol Trades Dashboard (Debug Mode)")
+st.markdown("Controle op Apify API-token en dataverwerking")
 
-# Apify token ophalen
+# Haal Apify token op uit secrets of omgevingsvariabele
 APIFY_TOKEN = st.secrets.get("APIFY_TOKEN") or os.getenv("APIFY_TOKEN")
+st.write("🔐 Apify token gevonden:", bool(APIFY_TOKEN))
 
 if not APIFY_TOKEN:
-    st.error("❌ APIFY_TOKEN niet gevonden in secrets of omgevingsvariabelen.")
+    st.error("❌ APIFY_TOKEN niet ingesteld.")
     st.stop()
 
-# CapitolTrades actor
+# Gebruik publieke Apify actor
 ACTOR_ID = "saswave~capitol-trades-scraper"
 
-@st.cache_data(ttl=3600)
 def run_apify_actor():
     run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
-    payload = {
-        "memoryMbytes": 4096,
-        "timeoutSecs": 1200,
-        "build": "latest",
-        "input": {"days": 90}
-    }
-    run_res = requests.post(run_url, json=payload)
-    run_res.raise_for_status()
-    run_id = run_res.json()["data"]["id"]
+    payload = {"memoryMbytes": 4096, "timeoutSecs": 1200, "build": "latest", "input": {"days": 90}}
 
-    # Pollen op voltooiing
-    for _ in range(30):
-        status_res = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}")
-        status = status_res.json()["data"]["status"]
+    try:
+        run_res = requests.post(run_url, json=payload)
+        run_res.raise_for_status()
+        run_id = run_res.json()["data"]["id"]
+        st.write("🚀 Actor gestart. Run ID:", run_id)
+    except Exception as e:
+        st.error(f"❌ Fout bij starten van Apify actor: {e}")
+        st.stop()
+
+    # Wachten op voltooiing
+    for attempt in range(30):
+        time.sleep(3)
+        check_res = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}")
+        status = check_res.json()["data"]["status"]
+        st.write(f"⌛ Poging {attempt+1}: Status = {status}")
         if status == "SUCCEEDED":
             break
-        time.sleep(3)
     else:
-        raise Exception("Timeout: Apify actor draait nog steeds...")
+        st.error("❌ Timeout: actor is niet binnen 90 seconden voltooid.")
+        st.stop()
 
-    # Resultaten ophalen
-    dataset_res = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={APIFY_TOKEN}")
-    dataset_res.raise_for_status()
-    return pd.DataFrame(dataset_res.json())
+    # Data ophalen
+    data_url = f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={APIFY_TOKEN}"
+    try:
+        data_res = requests.get(data_url)
+        data_res.raise_for_status()
+        data = data_res.json()
+        st.write("📦 Aantal records ontvangen:", len(data))
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"❌ Fout bij ophalen dataset: {e}")
+        st.stop()
 
-# Data ophalen
-try:
-    df = run_apify_actor()
-except Exception as e:
-    st.error("❌ Kon geen data ophalen van Apify.")
-    st.warning("⚠️ Geen data beschikbaar.")
-    st.stop()
+# Ophalen data
+df = run_apify_actor()
 
 if df.empty:
-    st.warning("⚠️ Geen resultaten gevonden.")
+    st.warning("⚠️ Geen resultaten ontvangen van Apify.")
     st.stop()
 
-# Kolommen standaardiseren
 df["politician"] = df["politician"].str.title()
 df["ticker"] = df["ticker"].str.upper()
 df["transactionDate"] = pd.to_datetime(df["transactionDate"]).dt.date
-df["amount"] = df["amount"].astype(str)
 
-# Interface
+# UI
 politici = df["politician"].unique().tolist()
-selectie = st.multiselect("Kies politicus:", politici, default=politici)
+selectie = st.multiselect("👤 Kies politicus:", politici, default=politici)
 
 df_selectie = df[df["politician"].isin(selectie)].sort_values(by="transactionDate", ascending=False)
 
-st.subheader("📄 Geselecteerde transacties")
-if df_selectie.empty:
-    st.warning("⚠️ Geen data beschikbaar.")
-else:
-    df_viz = df_selectie[["politician", "ticker", "transactionDate", "type", "amount"]].rename(columns={
-        "politician": "Politicus",
-        "ticker": "Aandeel",
-        "transactionDate": "Datum",
-        "type": "Transactie",
-        "amount": "Waarde"
-    })
-    st.dataframe(df_viz, use_container_width=True)
-    st.download_button("📥 Download als CSV", df_viz.to_csv(index=False), file_name="capitol_trades.csv")
+st.subheader("📊 Geselecteerde transacties")
+st.dataframe(df_selectie)
