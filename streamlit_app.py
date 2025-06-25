@@ -1,56 +1,46 @@
 import streamlit as st
 import pandas as pd
-import requests
 
-# Config
 st.set_page_config(page_title="Capitol Trades Dashboard", layout="wide")
-st.title("\U0001F3DB️ Capitol Trades Dashboard")
+st.title("🏛️ Capitol Trades Dashboard")
 st.caption("Recente aandelentransacties van prominente Amerikaanse politici")
 
-# URL van de pagina met transacties
-url = "https://www.capitoltrades.com/trades"
+@st.cache_data(ttl=3600)
+def load_data():
+    url = "https://www.capitoltrades.com/trades"
+    tables = pd.read_html(url)
+    return tables[0] if tables else pd.DataFrame()
 
-# Data proberen in te laden
 try:
-    dfs = pd.read_html(url)
-    df = dfs[0]
-    st.success("✅ Data succesvol opgehaald van CapitolTrades.com!")
+    df = load_data()
+    if not df.empty:
+        st.success("✅ Data succesvol opgehaald van CapitolTrades.com!")
 
-    # Kolom: Politician => formatteer naar naam + partij/positie
-    def format_politician(row):
-        name = row.split("Democrat") if "Democrat" in row else row.split("Republican")
-        party_info = "Democrat" + name[1] if len(name) > 1 and "Democrat" in row else ("Republican" + name[1] if len(name) > 1 else "")
-        return f"**{name[0].strip()}**\n{party_info.replace('Senate', ' Senate').replace('House', ' House')}"
+        # Format kolommen
+        def format_politician(raw):
+            name = raw.replace("Democrat", "**Democrat**").replace("Republican", "**Republican**")
+            name = name.replace("Senate", " Senate").replace("House", " House")
+            return f"<b>{name.split('**')[0]}</b><br>{'**'.join(name.split('**')[1:])}"
 
-    df["Politician"] = df["Politician"].astype(str).apply(format_politician)
+        df["Politician"] = df["Politician"].astype(str).apply(format_politician)
+        df["Published"] = df["Published"].str.replace("Yesterday", " Yesterday")
+        df["Filed After"] = df["Filed After"].str.replace("days", "days ")
+        
+        if "Unnamed: 9" in df.columns:
+            df["🔗 Trade Link"] = df["Unnamed: 9"].apply(
+                lambda x: f'<a href="https://www.capitoltrades.com{x.split(" ")[-1]}" target="_blank">Details</a>' 
+                if isinstance(x, str) and "Goto" in x else "")
+            df.drop(columns=["Unnamed: 9"], inplace=True)
 
-    # Fix spacing in Published (tijd en 'Yesterday')
-    df["Published"] = df["Published"].str.replace("Yesterday", " Yesterday")
+        # Selecteer relevante kolommen
+        display_df = df[["Politician", "Traded Issuer", "Published", "Traded", 
+                         "Filed After", "Owner", "Type", "Size", "Price", "🔗 Trade Link"]]
 
-    # Spatie tussen 'days' en getal in 'Filed After'
-    df["Filed After"] = df["Filed After"].str.replace(r"days(\d+)", r"days \1", regex=True)
+        # Converteer naar HTML
+        html_table = display_df.to_html(escape=False, index=False)
+        st.markdown(html_table, unsafe_allow_html=True)
 
-    # Maak van 'Goto trade detail page' een echte link
-    if "Unnamed: 9" in df.columns:
-        df["Link"] = df["Unnamed: 9"].apply(lambda x: f'[Details](https://www.capitoltrades.com{x.split(" ")[-1]})' if isinstance(x, str) and "Goto" in x else "")
-        df.drop(columns=["Unnamed: 9"], inplace=True)
-
-    # Kolomnamen netter maken
-    df.rename(columns={
-        "Politician": "🧑 Politician",
-        "Traded Issuer": "🏢 Traded Issuer",
-        "Published": "🕒 Published",
-        "Traded": "📅 Traded",
-        "Filed After": "📁 Filed After",
-        "Owner": "👤 Owner",
-        "Type": "📈 Type",
-        "Size": "💰 Size",
-        "Price": "💵 Price",
-        "Link": "🔗 Trade Link"
-    }, inplace=True)
-
-    # Toon tabel
-    st.dataframe(df, use_container_width=True)
-
+    else:
+        st.warning("⚠️ Geen data beschikbaar.")
 except Exception as e:
     st.error(f"❌ Fout bij ophalen van data: {e}")
