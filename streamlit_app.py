@@ -1,79 +1,63 @@
-
 import streamlit as st
 import requests
 import pandas as pd
+from datetime import datetime
 import time
-import os
 
-st.set_page_config(page_title="Capitol Trades Debug", page_icon="🔍")
+st.set_page_config(page_title="Capitol Trades", layout="wide")
 
-st.title("🏛️ Capitol Trades Dashboard (Debug Mode)")
+st.markdown("## 🏛️ Capitol Trades Dashboard (Debug Mode)")
 st.markdown("Controle op Apify API-token en dataverwerking")
 
-# Haal Apify token op uit secrets of omgevingsvariabele
-APIFY_TOKEN = st.secrets.get("APIFY_TOKEN") or os.getenv("APIFY_TOKEN")
-st.write("🔐 Apify token gevonden:", bool(APIFY_TOKEN))
+# Haal Apify token op uit Streamlit secrets
+APIFY_TOKEN = st.secrets.get("APIFY_TOKEN", None)
 
 if not APIFY_TOKEN:
-    st.error("❌ APIFY_TOKEN niet ingesteld.")
+    st.error("❌ Geen Apify token gevonden in Streamlit secrets.")
     st.stop()
+else:
+    st.markdown(f"🔐 Apify token gevonden: <span style='color: green'>True</span>", unsafe_allow_html=True)
 
-# Gebruik publieke Apify actor
+# Actor config
 ACTOR_ID = "lukass~congress-stock-trades"
+RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
+HEADERS = {"Content-Type": "application/json"}
 
-def run_apify_actor():
-    run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
-    payload = {"memoryMbytes": 4096, "timeoutSecs": 1200, "build": "latest", "input": {"days": 90}}
+try:
+    # Start de actor
+    run_response = requests.post(RUN_URL, headers=HEADERS)
+    run_response.raise_for_status()
+    run_id = run_response.json()["data"]["id"]
 
-    try:
-        run_res = requests.post(run_url, json=payload)
-        run_res.raise_for_status()
-        run_id = run_res.json()["data"]["id"]
-        st.write("🚀 Actor gestart. Run ID:", run_id)
-    except Exception as e:
-        st.error(f"❌ Fout bij starten van Apify actor: {e}")
-        st.stop()
+    st.success("✅ Apify actor gestart")
 
-    # Wachten op voltooiing
-    for attempt in range(30):
-        time.sleep(3)
-        check_res = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}")
-        status = check_res.json()["data"]["status"]
-        st.write(f"⌛ Poging {attempt+1}: Status = {status}")
-        if status == "SUCCEEDED":
+    # Poll voor resultaat
+    result = None
+    for _ in range(20):
+        time.sleep(5)
+        status_resp = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}", headers=HEADERS)
+        status_resp.raise_for_status()
+        status_data = status_resp.json()["data"]
+        if status_data["status"] == "SUCCEEDED":
+            result = status_data
             break
-    else:
-        st.error("❌ Timeout: actor is niet binnen 90 seconden voltooid.")
+        elif status_data["status"] in ["FAILED", "ABORTED", "TIMED-OUT"]:
+            raise Exception(f"Run status: {status_data['status']}")
+
+    if not result:
+        raise TimeoutError("⏱️ Timeout: Apify actor gaf geen tijdig resultaat.")
+
+    # Haal dataset ID op
+    dataset_id = result["defaultDatasetId"]
+    dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json"
+    df = pd.read_json(dataset_url)
+
+    if df.empty:
+        st.warning("⚠️ Geen data beschikbaar.")
         st.stop()
 
-    # Data ophalen
-    data_url = f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={APIFY_TOKEN}"
-    try:
-        data_res = requests.get(data_url)
-        data_res.raise_for_status()
-        data = data_res.json()
-        st.write("📦 Aantal records ontvangen:", len(data))
-        return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"❌ Fout bij ophalen dataset: {e}")
-        st.stop()
+    st.success("✅ Data succesvol geladen!")
+    st.dataframe(df)
 
-# Ophalen data
-df = run_apify_actor()
-
-if df.empty:
-    st.warning("⚠️ Geen resultaten ontvangen van Apify.")
-    st.stop()
-
-df["politician"] = df["politician"].str.title()
-df["ticker"] = df["ticker"].str.upper()
-df["transactionDate"] = pd.to_datetime(df["transactionDate"]).dt.date
-
-# UI
-politici = df["politician"].unique().tolist()
-selectie = st.multiselect("👤 Kies politicus:", politici, default=politici)
-
-df_selectie = df[df["politician"].isin(selectie)].sort_values(by="transactionDate", ascending=False)
-
-st.subheader("📊 Geselecteerde transacties")
-st.dataframe(df_selectie)
+except Exception as e:
+    st.error(f"❌ Fout bij starten van Apify actor: {e}")
