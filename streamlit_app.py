@@ -1,66 +1,45 @@
 import streamlit as st
 import requests
 import pandas as pd
+from datetime import datetime
 import time
 
-st.set_page_config(page_title="Capitol Trades - Pelosi", layout="wide")
-st.title("🏛️ Capitol Trades: Nancy Pelosi")
-
-# 🔐 Apify token ophalen
-APIFY_TOKEN = st.secrets.get("APIFY_TOKEN", None)
-
-if not APIFY_TOKEN:
-    st.error("❌ Geen Apify token gevonden in je Streamlit secrets.")
-    st.stop()
-else:
-    st.success("✅ Apify token gevonden.")
-
-# 🎯 Actorinstellingen
+# Actor en API-token ophalen
 ACTOR_ID = "saswave~capitol-trades-scraper"
-RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
-HEADERS = {"Content-Type": "application/json"}
+API_TOKEN = st.secrets["apify"]["token"]
+RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={API_TOKEN}&memory=1024&timeout=120"
 
-# 📤 Input voor deze actor (Nancy Pelosi standaard)
-payload = {
-    "startUrls": [
-        {
-            "url": "https://www.capitoltrades.com/trades?politician=Pelosi-Nancy"
-        }
-    ],
-    "maxPagesPerRun": 1,
-    "maxItems": 50
-}
+st.set_page_config(page_title="Capitol Trades", page_icon="🏛️", layout="wide")
+st.title("🏛️ Capitol Trades Dashboard (Debug Mode)")
+st.caption("Controle op Apify API-token en dataverwerking")
 
-# ▶️ Actor starten
-try:
-    start_resp = requests.post(RUN_URL, headers=HEADERS, json=payload)
-    start_resp.raise_for_status()
-    run_id = start_resp.json()["data"]["id"]
-    st.info("⏳ Actor gestart. Data wordt opgehaald...")
+# Debug info
+st.write("🔐 Apify token gevonden:", API_TOKEN is not None)
 
-    # ⏱ Poll op status
-    for _ in range(30):
-        status = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}", headers=HEADERS).json()["data"]
-        if status["status"] == "SUCCEEDED":
-            dataset_id = status["defaultDatasetId"]
-            break
-        elif status["status"] in ["FAILED", "ABORTED"]:
-            st.error(f"❌ Actor status: {status['status']}")
-            st.stop()
-        time.sleep(2)
-    else:
-        st.error("❌ Timeout: Apify actor gaf geen resultaat.")
-        st.stop()
+# Actor starten
+with st.spinner("⏳ Start Apify actor en wacht op data..."):
+    try:
+        start_res = requests.post(RUN_URL)
+        start_res.raise_for_status()
+        run_id = start_res.json()["data"]["id"]
 
-    # 📥 Haal resultaten op
-    data_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json"
-    df = pd.read_json(data_url)
+        # Pollen tot voltooiing
+        STATUS_URL = f"https://api.apify.com/v2/actor-runs/{run_id}?token={API_TOKEN}"
+        DATASET_URL = f"https://api.apify.com/v2/datasets/{run_id}/items?format=json&clean=true&token={API_TOKEN}"
 
-    if df.empty:
-        st.warning("⚠️ Geen data gevonden.")
-    else:
-        st.success("✅ Data geladen van Apify!")
-        st.dataframe(df)
+        status = "RUNNING"
+        while status in ["READY", "RUNNING"]:
+            time.sleep(2)
+            poll = requests.get(STATUS_URL).json()
+            status = poll["data"]["status"]
+            st.write(f"📡 Status: {status}")
 
-except Exception as e:
-    st.error(f"❌ Fout tijdens ophalen van data: {e}")
+        if status != "SUCCEEDED":
+            st.error(f"❌ Run mislukt: {status}")
+        else:
+            df = pd.read_json(DATASET_URL)
+            st.success("✅ Data opgehaald van Apify!")
+            st.dataframe(df)
+
+    except Exception as e:
+        st.error(f"❌ Fout bij starten van Apify actor: {e}")
