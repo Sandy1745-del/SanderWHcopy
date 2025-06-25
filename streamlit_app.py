@@ -1,75 +1,87 @@
+
 import streamlit as st
-import pandas as pd
-import yfinance as yf
-from datetime import datetime
-import pytz
 import requests
+import pandas as pd
+import time
+import os
 
-# Lijst prominente politici
-PROMINENTE_POLITICI = [
-    "Nancy Pelosi", "Dan Crenshaw", "Tommy Tuberville", "Ro Khanna", "Josh Hawley"
-]
+st.set_page_config(page_title="Capitol Trades Dashboard", page_icon="🏛️")
 
-# Laad Apify-token uit .secrets (vereist configuratie op Streamlit Cloud)
-API_URL = "https://api.apify.com/v2/actor-tasks/KX0iSTdmpU75fCY9U/runs/last/dataset/items?token=O3sxpo33MCStXdUL5yx0yT9UPlelv71evpgh"
+st.title("🏛️ Capitol Trades Dashboard")
+st.markdown("Recente aandelentransacties van prominente Amerikaanse politici")
+
+# Apify token ophalen
+APIFY_TOKEN = st.secrets.get("APIFY_TOKEN") or os.getenv("APIFY_TOKEN")
+
+if not APIFY_TOKEN:
+    st.error("❌ APIFY_TOKEN niet gevonden in secrets of omgevingsvariabelen.")
+    st.stop()
+
+# CapitolTrades actor
+ACTOR_ID = "saswave~capitol-trades-scraper"
 
 @st.cache_data(ttl=3600)
-def laad_data():
-    try:
-        response = requests.get(API_URL)
-        if response.status_code == 200:
-            data = response.json()
-            df = pd.DataFrame(data)
-            return df
-        else:
-            st.error("Kon geen data ophalen van Apify.")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Fout bij ophalen data: {e}")
-        return pd.DataFrame()
+def run_apify_actor():
+    run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
+    payload = {
+        "memoryMbytes": 4096,
+        "timeoutSecs": 1200,
+        "build": "latest",
+        "input": {"days": 90}
+    }
+    run_res = requests.post(run_url, json=payload)
+    run_res.raise_for_status()
+    run_id = run_res.json()["data"]["id"]
 
-def filter_dataframe(df):
-    df = df[df["politician"].isin(PROMINENTE_POLITICI)]
-    df["date"] = pd.to_datetime(df["date"])
-    df["datum"] = df["date"].dt.strftime("%d-%m-%Y")
-    df["type"] = df["type"].str.capitalize().replace({"Purchase": "Koop", "Sale": "Verkoop"})
-    return df[["politician", "ticker", "datum", "type", "amount", "asset"]]
-
-def voeg_actuele_koers_toe(df):
-    unieke_tickers = df["ticker"].dropna().unique()
-    koersen = {}
-    for ticker in unieke_tickers:
-        try:
-            koers = yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
-            koersen[ticker] = round(koers, 2)
-        except:
-            koersen[ticker] = None
-    df["Actuele koers ($)"] = df["ticker"].map(koersen)
-    return df
-
-def main():
-    st.set_page_config("Capitol Trades", page_icon="🏛️", layout="wide")
-    st.title("🏛️ Capitol Trades Dashboard")
-    st.write("Recente aandelentransacties van prominente Amerikaanse politici")
-
-    df_raw = laad_data()
-    if df_raw.empty:
-        st.warning("⚠️ Geen data beschikbaar.")
-        return
-
-    df = filter_dataframe(df_raw)
-    df = voeg_actuele_koers_toe(df)
-
-    selectie = st.multiselect("Selecteer politicus", PROMINENTE_POLITICI, default=PROMINENTE_POLITICI)
-    gefilterd = df[df["politician"].isin(selectie)]
-
-    if gefilterd.empty:
-        st.warning("⚠️ Geen resultaten voor deze selectie.")
+    # Pollen op voltooiing
+    for _ in range(30):
+        status_res = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}")
+        status = status_res.json()["data"]["status"]
+        if status == "SUCCEEDED":
+            break
+        time.sleep(3)
     else:
-        st.dataframe(gefilterd, use_container_width=True)
+        raise Exception("Timeout: Apify actor draait nog steeds...")
 
-        csv = gefilterd.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download als CSV", csv, "capitoltrades.csv", "text/csv")
+    # Resultaten ophalen
+    dataset_res = requests.get(f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={APIFY_TOKEN}")
+    dataset_res.raise_for_status()
+    return pd.DataFrame(dataset_res.json())
 
-if __name__ == "__main__":
-    main()
+# Data ophalen
+try:
+    df = run_apify_actor()
+except Exception as e:
+    st.error("❌ Kon geen data ophalen van Apify.")
+    st.warning("⚠️ Geen data beschikbaar.")
+    st.stop()
+
+if df.empty:
+    st.warning("⚠️ Geen resultaten gevonden.")
+    st.stop()
+
+# Kolommen standaardiseren
+df["politician"] = df["politician"].str.title()
+df["ticker"] = df["ticker"].str.upper()
+df["transactionDate"] = pd.to_datetime(df["transactionDate"]).dt.date
+df["amount"] = df["amount"].astype(str)
+
+# Interface
+politici = df["politician"].unique().tolist()
+selectie = st.multiselect("Kies politicus:", politici, default=politici)
+
+df_selectie = df[df["politician"].isin(selectie)].sort_values(by="transactionDate", ascending=False)
+
+st.subheader("📄 Geselecteerde transacties")
+if df_selectie.empty:
+    st.warning("⚠️ Geen data beschikbaar.")
+else:
+    df_viz = df_selectie[["politician", "ticker", "transactionDate", "type", "amount"]].rename(columns={
+        "politician": "Politicus",
+        "ticker": "Aandeel",
+        "transactionDate": "Datum",
+        "type": "Transactie",
+        "amount": "Waarde"
+    })
+    st.dataframe(df_viz, use_container_width=True)
+    st.download_button("📥 Download als CSV", df_viz.to_csv(index=False), file_name="capitol_trades.csv")
