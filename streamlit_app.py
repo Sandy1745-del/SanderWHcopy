@@ -19,7 +19,7 @@ else:
     st.markdown(f"🔐 Apify token gevonden: <span style='color: green'>True</span>", unsafe_allow_html=True)
 
 # Actor config
-ACTOR_ID = "lukass~congress-stock-trades"
+ACTOR_ID = "saswave~capitol-trades-scraper"
 RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
 HEADERS = {"Content-Type": "application/json"}
 
