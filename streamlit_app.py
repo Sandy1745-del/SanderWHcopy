@@ -19,7 +19,7 @@ if not APIFY_TOKEN:
     st.stop()
 
 # Gebruik publieke Apify actor
-ACTOR_ID = "KX0iSTdmpU75fCY9U"
+ACTOR_ID = "lukasss~congress-stock-trades"
 
 def run_apify_actor():
     run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={APIFY_TOKEN}"
